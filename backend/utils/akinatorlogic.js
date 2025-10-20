@@ -1,40 +1,80 @@
-import {prisma} from "../lib/prisma.js"
-//import {formatQuestionForUser} from "./questionmapper.js"
-// Improved question formatting
-function formatQuestion(trait) {
-  // Define specific question templates for each trait
-  const specificQuestions = {
-    // Boolean traits
-    'Super Strength': 'Does your character have super strength?',
-    'Flight': 'Can your character fly?',
-    'Super Speed': 'Is your character super fast?',
-    'Super Intelligence': 'Is your character super intelligent?',
-    'Super Durability': 'Is your character super durable?',
+import { prisma } from "../lib/prisma.js";
+
+//question formatting - now pulls from questions table
+export async function formatQuestion(trait) {
+  try {
+    // Try to get specific questions from the questions table for this trait
+    const traitQuestions = await prisma.question.findMany({
+      where: { 
+        traitId: trait.id,
+        active: true 
+      }
+      // Removed popularity and infoValue sorting since they don't exist in your schema
+    });
+
+    // If we have specific questions for this trait, use a random one
+    if (traitQuestions.length > 0) {
+      const randomQuestion = traitQuestions[Math.floor(Math.random() * traitQuestions.length)];
+      return {
+        id: randomQuestion.id, // Use question ID, not trait ID
+        text: randomQuestion.text,
+        type: trait.type, // Use trait's type since question doesn't have type
+        key: trait.key,
+        displayName: trait.displayName,
+        popularity: trait.popularity, // Use trait's popularity
+        infoValue: trait.infoValue,   // Use trait's infoValue
+        traitId: trait.id // Keep reference to the underlying trait
+      };
+    }
+
+    // Fallback: Use the old formatQuestion logic if no specific questions exist
+    const specificQuestions = {
+      // Boolean traits
+      'Super Strength': 'Does your character have super strength?',
+      'Flight': 'Can your character fly?',
+      'Super Speed': 'Is your character super fast?',
+      'Super Intelligence': 'Is your character super intelligent?',
+      'Super Durability': 'Is your character super durable?',
+      
+      // Enum traits - convert to meaningful questions
+      'alignment': 'Is your character good-aligned?',
+      'gender': 'Is your character male?',
+      'species': 'Is your character human?',
+      'occupation': 'Does your character have a specific occupation?',
+      'origin': 'Is your character from a specific origin?',
+      'affiliation': 'Is your character part of a specific group?'
+    };
     
-    // Enum traits - convert to meaningful questions
-    'alignment': 'Is your character good-aligned?',
-    'gender': 'Is your character male?',
-    'species': 'Is your character human?',
-    'occupation': 'Does your character have a specific occupation?',
-    'origin': 'Is your character from a specific origin?',
-    'affiliation': 'Is your character part of a specific group?'
-  };
-  
-  // Use specific question if available, otherwise fallback
-  const questionText = specificQuestions[trait.key] || 
-    specificQuestions[trait.displayName] || 
-    `Is your character ${trait.displayName}?`;
-  
-  return {
-    id: trait.id,
-    text: questionText,
-    type: trait.type,
-    key: trait.key,
-    displayName: trait.displayName,
-    popularity: trait.popularity,
-    infoValue: trait.infoValue
-  };
+    const questionText = specificQuestions[trait.key] || 
+      specificQuestions[trait.displayName] || 
+      `Is your character ${trait.displayName}?`;
+    
+    return {
+      id: `temp-${trait.id}`, // Still use trait ID as fallback
+      text: questionText,
+      type: trait.type,
+      key: trait.key,
+      displayName: trait.displayName,
+      popularity: trait.popularity,
+      infoValue: trait.infoValue,
+      traitId: trait.id
+    };
+  } catch (error) {
+    console.error("Error formatting question:", error);
+    // Fallback to basic question
+    return {
+      id: trait.id,
+      text: `Is your character ${trait.displayName}?`,
+      type: trait.type,
+      key: trait.key,
+      displayName: trait.displayName,
+      popularity: trait.popularity,
+      infoValue: trait.infoValue,
+      traitId: trait.id
+    };
+  }
 }
+
 export async function getNextQuestion(sessionId) {
   try {
     // 1. Load all characters, traits, and session answers
@@ -54,7 +94,7 @@ export async function getNextQuestion(sessionId) {
       where: { active: true } 
     });
 
-    // 2. Get asked trait IDs
+    // 2. Get asked trait IDs (from either trait-based or question-based answers)
     const askedTraitIds = answers.map(a => a.traitId);
     
     // 3. Filter unanswered traits
@@ -65,11 +105,14 @@ export async function getNextQuestion(sessionId) {
     // 4. Calculate current probabilities
     const probabilities = calculateProbabilities(characters, answers);
     
-    // 5. Find trait with maximum information gain
+    // 5. Find trait with maximum information gain (your existing logic)
     const bestTrait = findMaxInformationGain(remainingTraits, characters, probabilities, answers);
+    
     if (bestTrait) {
-      return formatQuestion(bestTrait);
+      // 6. Format the question - now pulls from questions table
+      return await formatQuestion(bestTrait);
     }
+    
     return null;
   } catch (error) {
     console.error("Error in getNextQuestion:", error);
@@ -77,46 +120,8 @@ export async function getNextQuestion(sessionId) {
   }
 }
 
-export async function getMostLikelyCharacter(sessionId) {
-  try {
-    const characters = await prisma.character.findMany({
-      include: { 
-        traits: { 
-          include: { trait: true } 
-        } 
-      }
-    });
-    
-    const answers = await prisma.answerLog.findMany({ 
-      where: { sessionId } 
-    });
-
-    const probabilities = calculateProbabilities(characters, answers);
-    
-    // Find character with highest probability
-    let maxProb = 0;
-    let bestCharacter = null;
-    
-    for (const [charId, prob] of Object.entries(probabilities)) {
-      if (prob > maxProb) {
-        maxProb = prob;
-        bestCharacter = characters.find(c => c.id === charId);
-      }
-    }
-
-    return {
-      character: bestCharacter,
-      confidence: maxProb,
-      topChoices: getTopChoices(probabilities, characters, 3)
-    };
-  } catch (error) {
-    console.error("Error in getMostLikelyCharacter:", error);
-    throw error;
-  }
-}
-
 // Calculate probabilities using Naive Bayes
-function calculateProbabilities(characters, answers) {
+export function calculateProbabilities(characters, answers) {
   const totalCharacters = characters.length;
   const probabilities = {};
   
@@ -139,16 +144,47 @@ function calculateProbabilities(characters, answers) {
       const charTrait = char.traits.find(t => t.traitId === traitId);
       const charValue = charTrait ? charTrait.value : 'UNKNOWN';
       
+      // Get the trait to check its type
+      const trait = charTrait?.trait;
+      
       // Likelihood: P(answer | character)
       let likelihood;
+      
       if (userAnswer === 'UNKNOWN') {
         likelihood = 0.5; // Neutral for unknown answers
-      } else if (charValue === userAnswer) {
-        likelihood = 0.8; // High probability if match
-      } else if (charValue === 'UNKNOWN') {
-        likelihood = 0.3; // Low probability if character has unknown value
+      } else if (trait?.type === 'ENUM') {
+        // Handle enum traits (alignment, gender, species, etc.)
+        if (trait.key === 'alignment') {
+          // For alignment: TRUE = Good, FALSE = Evil/Neutral
+          if (userAnswer === 'TRUE') {
+            likelihood = charValue === 'Good' ? 0.9 : 0.1;
+          } else if (userAnswer === 'FALSE') {
+            likelihood = (charValue === 'Evil' || charValue === 'Neutral') ? 0.9 : 0.1;
+          } else {
+            likelihood = 0.5; // Unknown answer
+          }
+        } else if (trait.key === 'gender') {
+          // For gender: TRUE = Male, FALSE = Female
+          if (userAnswer === 'TRUE') {
+            likelihood = charValue === 'Male' ? 0.9 : 0.1;
+          } else if (userAnswer === 'FALSE') {
+            likelihood = charValue === 'Female' ? 0.9 : 0.1;
+          } else {
+            likelihood = 0.5;
+          }
+        } else {
+          // Generic enum handling - direct value matching
+          likelihood = charValue === userAnswer ? 0.9 : 0.1;
+        }
       } else {
-        likelihood = 0.2; // Low probability if mismatch
+        // Boolean trait handling (original logic)
+        if (charValue === userAnswer) {
+          likelihood = 0.9; // High probability if match
+        } else if (charValue === 'UNKNOWN') {
+          likelihood = 0.3; // Low probability if character has unknown value
+        } else {
+          likelihood = 0.1; // Low probability if mismatch
+        }
       }
       
       newProbabilities[char.id] = probabilities[char.id] * likelihood;
@@ -165,9 +201,8 @@ function calculateProbabilities(characters, answers) {
   
   return probabilities;
 }
-
 // Find trait with maximum information gain
-function findMaxInformationGain(remainingTraits, characters, currentProbabilities, answers) {
+export function findMaxInformationGain(remainingTraits, characters, currentProbabilities, answers) {
   let maxInfoGain = -1;
   let bestTrait = null;
   
@@ -205,7 +240,7 @@ function findMaxInformationGain(remainingTraits, characters, currentProbabilitie
 }
 
 // Calculate entropy of current probability distribution
-function calculateEntropy(probabilities) {
+export function calculateEntropy(probabilities) {
   let entropy = 0;
   for (const prob of Object.values(probabilities)) {
     if (prob > 0) {
@@ -216,7 +251,7 @@ function calculateEntropy(probabilities) {
 }
 
 // Calculate information gain for a specific trait
-function calculateInformationGain(trait, characters, currentEntropy, currentProbabilities) {
+export  function calculateInformationGain(trait, characters, currentProbabilities, currentEntropy) {
   const answers = ['TRUE', 'FALSE', 'UNKNOWN'];
   let weightedEntropy = 0;
   
@@ -268,7 +303,7 @@ function calculateInformationGain(trait, characters, currentEntropy, currentProb
 }
 
 // Get top N most likely characters
-function getTopChoices(probabilities, characters, topN = 3) {
+export function getTopChoices(probabilities, characters, topN = 3) {
   return Object.entries(probabilities)
     .sort(([, probA], [, probB]) => probB - probA)
     .slice(0, topN)
@@ -297,6 +332,44 @@ export async function shouldMakeGuess(sessionId, maxQuestions = 20, confidenceTh
   
   return maxProbability >= confidenceThreshold;
 }
+
+export async function getMostLikelyCharacter(sessionId) {
+  try {
+    const characters = await prisma.character.findMany({
+      include: { 
+        traits: { 
+          include: { trait: true } 
+        } 
+      }
+    });
+    
+    const answers = await prisma.answerLog.findMany({ 
+      where: { sessionId } 
+    });
+
+    const probabilities = calculateProbabilities(characters, answers);
+    
+    // Find character with highest probability
+    let maxProb = 0;
+    let bestCharacter = null;
+    
+    for (const [charId, prob] of Object.entries(probabilities)) {
+      if (prob > maxProb) {
+        maxProb = prob;
+        bestCharacter = characters.find(c => c.id === charId);
+      }
+    }
+
+    return {
+      character: bestCharacter,
+      confidence: maxProb,
+      topChoices: getTopChoices(probabilities, characters, 3)
+    };
+  } catch (error) {
+    console.error("Error in getMostLikelyCharacter:", error);
+    throw error;
+  }
+}
 export async function updateTraitStatistics(sessionId, correctCharacterId) {
   try {
     const answers = await prisma.answerLog.findMany({
@@ -321,10 +394,10 @@ export async function updateTraitStatistics(sessionId, correctCharacterId) {
          (answer.answer === 'PROBABLY' && characterTrait.value === 'TRUE') ||
          (answer.answer === 'PROBABLY_NOT' && characterTrait.value === 'FALSE'));
       
-      // Update popularity (how often this trait is useful)
+      // Update trait popularity (how often this trait is useful)
       const newPopularity = (answer.trait.popularity || 0) * 0.95 + 0.05;
       
-      // Update infoValue (how well this trait distinguishes characters)
+      // Update trait infoValue (how well this trait distinguishes characters)
       let newInfoValue = answer.trait.infoValue || 0;
       if (wasAnswerCorrect) {
         newInfoValue = newInfoValue * 0.9 + 0.1; // Increase if useful

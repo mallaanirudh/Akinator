@@ -15,6 +15,7 @@ model User {
   characters Character[]
   sessions   Session[]
   traits     Trait[]
+  questions  Question[]
 }
 
 model Character {
@@ -39,6 +40,7 @@ model Trait {
   createdById String
   answerLogs  AnswerLog[]
   characters  CharacterTrait[]
+  questions   Question[]
   createdBy   User             @relation(fields: [createdById], references: [id])
 }
 
@@ -64,10 +66,12 @@ model AnswerLog {
   id         String   @id @default(uuid())
   sessionId  String
   traitId    String
+  questionId String?
   answer     String
   answeredAt DateTime @default(now())
   session    Session  @relation(fields: [sessionId], references: [id])
   trait      Trait    @relation(fields: [traitId], references: [id])
+  question   Question? @relation(fields: [questionId], references: [id])
 }
 
 enum Typetrait {
@@ -80,4 +84,17 @@ enum CommonTraitValue {
   TRUE
   FALSE
   UNKNOWN
+}
+model Question {
+  id          String   @id @default(uuid())
+  traitId     String   // link to the trait this question is about
+  text        String   // the actual question text
+  createdAt   DateTime @default(now())
+  createdById String?  // optional: user who added the question
+  active      Boolean  @default(true)
+
+  trait       Trait    @relation(fields: [traitId], references: [id])
+  createdBy   User?    @relation(fields: [createdById], references: [id])
+  answerLogs  AnswerLog[]  // optional: track which answers were for this question
+  @@unique([traitId, text])
 }
