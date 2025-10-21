@@ -1,33 +1,131 @@
 import { prisma } from "../lib/prisma.js";
+//HELPER FUNCTION ---------------------------------------
+async function getPossibleAnswers(trait, characters) {
+  if (trait.type === 'BOOLEAN') {
+    return ['TRUE', 'FALSE', 'UNKNOWN'];
+  } else if (trait.type === 'ENUM') {
+    // Get actual distinct values from characters for this trait
+    const values = characters
+      .flatMap(c => c.traits)
+      .filter(t => t.traitId === trait.id)
+      .map(t => t.value)
+      .filter(v => v && v !== 'UNKNOWN');
+    
+    const uniqueValues = [...new Set(values)];
+    return uniqueValues.length > 0 ? [...uniqueValues, 'UNKNOWN'] : ['UNKNOWN'];
+  }
+  return ['UNKNOWN'];
+}
+function getValueFrequency(traitId, value, characters) {
+  const total = characters.length;
+  const matches = characters.filter(c => 
+    c.traits.some(t => t.traitId === traitId && t.value === value)
+  ).length;
+  return (matches + 1) / (total + 1); // Laplace smoothing
+}
+//----------------------------------
+// Add this normalization function
+function normalizeUserAnswer(answer) {
+  const mapping = {
+    'YES': 'TRUE',
+    'NO': 'FALSE',
+    'SOMETIMES': 'PROBABLY_YES', 
+    'UNKNOWN': 'UNKNOWN',
+    'IDK': 'UNKNOWN',
+    'PROBABLY': 'PROBABLY_YES',
+    'PROBABLY_NOT': 'PROBABLY_NO'
+  };
+  return mapping[answer.toUpperCase()] || 'UNKNOWN';
+}
 
-//question formatting - now pulls from questions table
+// Update your submitAnswer to use normalized answers
+await prisma.answerLog.create({
+  data: { 
+    sessionId, 
+    traitId: finalTraitId,
+    questionId: finalQuestionId,
+    answer: answer.toUpperCase(), // Store original
+    normalized: normalizeUserAnswer(answer), // Store normalized
+    isFallback: isFallbackQuestion
+  }
+});
+/**
+ * Helper to get possible values for an enum trait from database
+ */
+async function getTraitPossibleValues(traitId) {
+  const characterTraits = await prisma.characterTrait.findMany({
+    where: { traitId },
+    select: { value: true }
+  });
+  
+  const values = [...new Set(characterTraits.map(ct => ct.value))]
+    .filter(v => v && v !== 'UNKNOWN');
+  
+  return values;
+}
+/**
+ * Calculate likelihood of an answer given character's trait value
+ * Supports boolean, enum, and fuzzy answers
+ */
+function calculateLikelihood(userAnswer, charValue, trait, characters = []) {
+  const normalizedAnswer = normalizeUserAnswer(userAnswer);
+  const normalizedCharValue = charValue?.toUpperCase()?.trim() || 'UNKNOWN';
+
+  if (normalizedAnswer === 'UNKNOWN') return 0.5;
+  if (normalizedCharValue === 'UNKNOWN') return 0.3;
+
+  const SMOOTH_TRUE = 0.65;
+  const SMOOTH_FALSE = 0.35;
+  let likelihood = 0.5;
+
+  if (trait?.type === 'ENUM') {
+    const freq = getValueFrequency(trait.id, normalizedCharValue, characters);
+    likelihood = normalizedCharValue === normalizedAnswer
+      ? Math.min(0.7 / freq, 0.9)
+      : Math.max(0.3 * freq, 0.1);
+  }
+
+  else if (trait?.type === 'BOOLEAN') {
+    const isTrue = normalizedCharValue === 'TRUE';
+    switch (normalizedAnswer) {
+      case 'TRUE': likelihood = isTrue ? SMOOTH_TRUE : SMOOTH_FALSE; break;
+      case 'FALSE': likelihood = isTrue ? SMOOTH_FALSE : SMOOTH_TRUE; break;
+      case 'PROBABLY_YES': likelihood = isTrue ? 0.6 : 0.4; break;
+      case 'PROBABLY_NO': likelihood = isTrue ? 0.4 : 0.6; break;
+      default: likelihood = 0.5;
+    }
+  }
+
+  return likelihood;
+}
+
 export async function formatQuestion(trait) {
   try {
-    // Try to get specific questions from the questions table for this trait
+    // Try to get specific questions from the questions table
     const traitQuestions = await prisma.question.findMany({
       where: { 
         traitId: trait.id,
         active: true 
       }
-      // Removed popularity and infoValue sorting since they don't exist in your schema
     });
 
-    // If we have specific questions for this trait, use a random one
     if (traitQuestions.length > 0) {
       const randomQuestion = traitQuestions[Math.floor(Math.random() * traitQuestions.length)];
       return {
-        id: randomQuestion.id, // Use question ID, not trait ID
+        id: randomQuestion.id,
         text: randomQuestion.text,
-        type: trait.type, // Use trait's type since question doesn't have type
+        type: trait.type,
         key: trait.key,
         displayName: trait.displayName,
-        popularity: trait.popularity, // Use trait's popularity
-        infoValue: trait.infoValue,   // Use trait's infoValue
-        traitId: trait.id // Keep reference to the underlying trait
+        popularity: trait.popularity,
+        infoValue: trait.infoValue,
+        traitId: trait.id,
+        possibleAnswers: trait.type === 'ENUM' ? 
+          await getTraitPossibleValues(trait.id) : undefined
       };
     }
 
-    // Fallback: Use the old formatQuestion logic if no specific questions exist
+    // Fallback questions with better enum support
     const specificQuestions = {
       // Boolean traits
       'Super Strength': 'Does your character have super strength?',
@@ -36,35 +134,38 @@ export async function formatQuestion(trait) {
       'Super Intelligence': 'Is your character super intelligent?',
       'Super Durability': 'Is your character super durable?',
       
-      // Enum traits - convert to meaningful questions
-      'alignment': 'Is your character good-aligned?',
-      'gender': 'Is your character male?',
-      'species': 'Is your character human?',
-      'occupation': 'Does your character have a specific occupation?',
-      'origin': 'Is your character from a specific origin?',
-      'affiliation': 'Is your character part of a specific group?'
+      // Enum traits - ask for specific values
+      'alignment': 'What is your character\'s alignment?',
+      'gender': 'What is your character\'s gender?',
+      'species': 'What species is your character?',
+      'occupation': 'What is your character\'s occupation?',
+      'origin': 'What is your character\'s origin?',
+      'affiliation': 'What group is your character affiliated with?'
     };
     
     const questionText = specificQuestions[trait.key] || 
       specificQuestions[trait.displayName] || 
-      `Is your character ${trait.displayName}?`;
+      (trait.type === 'ENUM' ? 
+        `What is your character's ${trait.displayName}?` :
+        `Does your character have ${trait.displayName}?`);
     
     return {
-      id: `temp-${trait.id}`, // Still use trait ID as fallback
+      id: `temp-${trait.id}`,
       text: questionText,
       type: trait.type,
       key: trait.key,
       displayName: trait.displayName,
       popularity: trait.popularity,
       infoValue: trait.infoValue,
-      traitId: trait.id
+      traitId: trait.id,
+      possibleAnswers: trait.type === 'ENUM' ? 
+        await getTraitPossibleValues(trait.id) : undefined
     };
   } catch (error) {
     console.error("Error formatting question:", error);
-    // Fallback to basic question
     return {
       id: trait.id,
-      text: `Is your character ${trait.displayName}?`,
+      text: `Does your character have ${trait.displayName}?`,
       type: trait.type,
       key: trait.key,
       displayName: trait.displayName,
@@ -75,52 +176,9 @@ export async function formatQuestion(trait) {
   }
 }
 
-export async function getNextQuestion(sessionId) {
-  try {
-    // 1. Load all characters, traits, and session answers
-    const characters = await prisma.character.findMany({
-      include: { 
-        traits: { 
-          include: { trait: true } 
-        } 
-      }
-    });
-    
-    const answers = await prisma.answerLog.findMany({ 
-      where: { sessionId } 
-    });
-    
-    const allTraits = await prisma.trait.findMany({ 
-      where: { active: true } 
-    });
-
-    // 2. Get asked trait IDs (from either trait-based or question-based answers)
-    const askedTraitIds = answers.map(a => a.traitId);
-    
-    // 3. Filter unanswered traits
-    const remainingTraits = allTraits.filter(t => !askedTraitIds.includes(t.id));
-    
-    if (remainingTraits.length === 0) return null;
-
-    // 4. Calculate current probabilities
-    const probabilities = calculateProbabilities(characters, answers);
-    
-    // 5. Find trait with maximum information gain (your existing logic)
-    const bestTrait = findMaxInformationGain(remainingTraits, characters, probabilities, answers);
-    
-    if (bestTrait) {
-      // 6. Format the question - now pulls from questions table
-      return await formatQuestion(bestTrait);
-    }
-    
-    return null;
-  } catch (error) {
-    console.error("Error in getNextQuestion:", error);
-    throw error;
-  }
-}
-
-// Calculate probabilities using Naive Bayes
+/**
+ * Calculate probabilities using Naive Bayes with improved likelihood modeling
+ */
 export function calculateProbabilities(characters, answers) {
   const totalCharacters = characters.length;
   const probabilities = {};
@@ -139,170 +197,200 @@ export function calculateProbabilities(characters, answers) {
     let totalWeight = 0;
     const newProbabilities = {};
     
-    // Calculate new probabilities for each character
     characters.forEach(char => {
       const charTrait = char.traits.find(t => t.traitId === traitId);
       const charValue = charTrait ? charTrait.value : 'UNKNOWN';
-      
-      // Get the trait to check its type
       const trait = charTrait?.trait;
       
-      // Likelihood: P(answer | character)
-      let likelihood;
-      
-      if (userAnswer === 'UNKNOWN') {
-        likelihood = 0.5; // Neutral for unknown answers
-      } else if (trait?.type === 'ENUM') {
-        // Handle enum traits (alignment, gender, species, etc.)
-        if (trait.key === 'alignment') {
-          // For alignment: TRUE = Good, FALSE = Evil/Neutral
-          if (userAnswer === 'TRUE') {
-            likelihood = charValue === 'Good' ? 0.9 : 0.1;
-          } else if (userAnswer === 'FALSE') {
-            likelihood = (charValue === 'Evil' || charValue === 'Neutral') ? 0.9 : 0.1;
-          } else {
-            likelihood = 0.5; // Unknown answer
-          }
-        } else if (trait.key === 'gender') {
-          // For gender: TRUE = Male, FALSE = Female
-          if (userAnswer === 'TRUE') {
-            likelihood = charValue === 'Male' ? 0.9 : 0.1;
-          } else if (userAnswer === 'FALSE') {
-            likelihood = charValue === 'Female' ? 0.9 : 0.1;
-          } else {
-            likelihood = 0.5;
-          }
-        } else {
-          // Generic enum handling - direct value matching
-          likelihood = charValue === userAnswer ? 0.9 : 0.1;
-        }
-      } else {
-        // Boolean trait handling (original logic)
-        if (charValue === userAnswer) {
-          likelihood = 0.9; // High probability if match
-        } else if (charValue === 'UNKNOWN') {
-          likelihood = 0.3; // Low probability if character has unknown value
-        } else {
-          likelihood = 0.1; // Low probability if mismatch
-        }
-      }
+      // Calculate likelihood using improved model
+      const likelihood = calculateLikelihood(userAnswer, charValue, trait);
       
       newProbabilities[char.id] = probabilities[char.id] * likelihood;
       totalWeight += newProbabilities[char.id];
     });
     
     // Normalize probabilities
-    if (totalWeight > 0) {
-      characters.forEach(char => {
-        probabilities[char.id] = newProbabilities[char.id] / totalWeight;
-      });
-    }
+    const EPS = 1e-6;
+    if (totalWeight > EPS) {
+  characters.forEach(char => {
+    probabilities[char.id] = (newProbabilities[char.id] + EPS) / (totalWeight + EPS * characters.length);
+  });
+}
+
   });
   
   return probabilities;
 }
-// Find trait with maximum information gain
-export function findMaxInformationGain(remainingTraits, characters, currentProbabilities, answers) {
-  let maxInfoGain = -1;
-  let bestTrait = null;
-  
-  // Calculate current entropy
-  const currentEntropy = calculateEntropy(currentProbabilities);
-  
-  // If all probabilities are equal (start of game), use popularity-based selection
-  const isStartOfGame = Object.values(currentProbabilities).every(p => 
-    Math.abs(p - (1/characters.length)) < 0.01
-  );
-  
-  for (const trait of remainingTraits) {
-    let infoGain;
-    
-    if (isStartOfGame) {
-      // At game start, use popularity + random factor to vary questions
-      const randomFactor = 0.1 + Math.random() * 0.3; // Add some randomness
-      infoGain = (trait.popularity || 0.1) * randomFactor;
-    } else {
-      // Normal information gain calculation
-      infoGain = calculateInformationGain(trait, characters, currentProbabilities, currentEntropy);
-      
-      // Boost info gain for traits that haven't been asked much
-      const popularityBoost = 1 - (trait.popularity || 0);
-      infoGain *= (1 + popularityBoost * 0.5); // Boost by up to 50%
-    }
-    
-    if (infoGain > maxInfoGain) {
-      maxInfoGain = infoGain;
-      bestTrait = trait;
-    }
-  }
-  
-  return bestTrait;
-}
 
-// Calculate entropy of current probability distribution
+/**
+ * Calculate entropy of probability distribution
+ */
 export function calculateEntropy(probabilities) {
   let entropy = 0;
   for (const prob of Object.values(probabilities)) {
-    if (prob > 0) {
+    if (prob > 0 && prob < 1) {
       entropy -= prob * Math.log2(prob);
     }
   }
   return entropy;
 }
 
-// Calculate information gain for a specific trait
-export  function calculateInformationGain(trait, characters, currentProbabilities, currentEntropy) {
-  const answers = ['TRUE', 'FALSE', 'UNKNOWN'];
-  let weightedEntropy = 0;
+/**
+ * Calculate information gain for a trait with proper enum support
+ */
+export function calculateInformationGain(trait, characters, currentProbabilities, currentEntropy, possibleAnswers) {
+  let expectedEntropy = 0;
   
-  answers.forEach(answer => {
+  for (const answer of possibleAnswers) {
     // Calculate probability of getting this answer
     let answerProb = 0;
+    const conditionalProbs = {};
+    
     characters.forEach(char => {
       const charTrait = char.traits.find(t => t.traitId === trait.id);
       const charValue = charTrait ? charTrait.value : 'UNKNOWN';
+      const likelihood = calculateLikelihood(answer, charValue, trait);
       
-      if (charValue === answer) {
-        answerProb += currentProbabilities[char.id];
-      } else if (answer === 'UNKNOWN') {
-        // Small probability for unknown answers
-        answerProb += currentProbabilities[char.id] * 0.1;
-      }
+      // Weight by current probability
+      const contribution = currentProbabilities[char.id] * likelihood;
+      answerProb += contribution;
+      conditionalProbs[char.id] = contribution;
     });
     
-    if (answerProb > 0) {
-      // Calculate conditional probabilities for this answer
-      const conditionalProbs = {};
+    if (answerProb > 0.01) { // Only consider likely answers
+      // Normalize conditional probabilities
       let sum = 0;
+      Object.values(conditionalProbs).forEach(p => sum += p);
       
-      characters.forEach(char => {
-        const charTrait = char.traits.find(t => t.traitId === trait.id);
-        const charValue = charTrait ? charTrait.value : 'UNKNOWN';
-        
-        if (charValue === answer) {
-          conditionalProbs[char.id] = currentProbabilities[char.id];
-        } else {
-          conditionalProbs[char.id] = 0;
-        }
-        sum += conditionalProbs[char.id];
-      });
-      
-      // Normalize
       if (sum > 0) {
         Object.keys(conditionalProbs).forEach(charId => {
           conditionalProbs[charId] /= sum;
         });
         
         const conditionalEntropy = calculateEntropy(conditionalProbs);
-        weightedEntropy += answerProb * conditionalEntropy;
+        expectedEntropy += answerProb * conditionalEntropy;
       }
     }
-  });
+  }
   
-  return currentEntropy - weightedEntropy;
+  return currentEntropy - expectedEntropy;
 }
 
-// Get top N most likely characters
+/**
+ * Find trait with maximum information gain using improved algorithm
+ */
+export function findMaxInformationGain(remainingTraits, characters, currentProbabilities, answers) {
+  let maxScore = -Infinity;
+  let bestTrait = null;
+  
+  // Calculate current entropy
+  const currentEntropy = calculateEntropy(currentProbabilities);
+  
+  // Check if we're at start of game
+  const isStartOfGame = answers.length === 0 || Object.values(currentProbabilities).every(p => 
+    Math.abs(p - (1/characters.length)) < 0.01
+  );
+  
+  for (const trait of remainingTraits) {
+    let score;
+    
+    if (isStartOfGame) {
+      // At game start, prefer high-value traits with variety
+      const baseScore = (trait.infoValue || 0.5) * 10;
+      const popularityBonus = (trait.popularity || 0.3) * 5;
+      const randomFactor = Math.random() * 2; // Add variety
+      score = baseScore + popularityBonus + randomFactor;
+    } else {
+      // Get possible answers for this trait
+      const possibleAnswers = getPossibleAnswersSync(trait, characters);
+      
+      // Calculate expected information gain
+      const infoGain = calculateInformationGain(
+        trait, 
+        characters, 
+        currentProbabilities, 
+        currentEntropy,
+        possibleAnswers
+      );
+      
+      // Boost based on historical information value
+      const historyBoost = (trait.infoValue || 0.5) * 2;
+      
+      // Penalize very rare traits unless we're desperate
+      const rarityPenalty = (trait.popularity || 0.1) < 0.05 ? -1 : 0;
+      
+      // Combine factors
+      score = infoGain + historyBoost + rarityPenalty;
+    }
+    
+    if (score > maxScore) {
+      maxScore = score;
+      bestTrait = trait;
+    }
+  }
+  //return something even if the traits have similar info gain
+  return bestTrait || remainingTraits[Math.floor(Math.random() * remainingTraits.length)];
+
+}
+
+/**
+ * Synchronous way to get getPossibleAnswers for use in main loop
+ */
+function getPossibleAnswersSync(trait, characters) {
+  if (trait.type === 'BOOLEAN') {
+    return ['TRUE', 'FALSE', 'UNKNOWN'];
+  } else if (trait.type === 'ENUM') {
+    const values = characters
+      .flatMap(c => c.traits)
+      .filter(t => t.traitId === trait.id)
+      .map(t => t.value)
+      .filter(v => v && v !== 'UNKNOWN');
+    
+    const uniqueValues = [...new Set(values)];
+    return uniqueValues.length > 0 ? [...uniqueValues, 'UNKNOWN'] : ['UNKNOWN'];
+  }
+  return ['UNKNOWN'];
+}
+export async function getNextQuestion(sessionId) {
+  try {
+    const characters = await prisma.character.findMany({
+      include: { 
+        traits: { 
+          include: { trait: true } 
+        } 
+      }
+    });
+    
+    const answers = await prisma.answerLog.findMany({ 
+      where: { sessionId } 
+    });
+    
+    const allTraits = await prisma.trait.findMany({ 
+      where: { active: true } 
+    });
+
+    const askedTraitIds = answers.map(a => a.traitId);
+    const remainingTraits = allTraits.filter(t => !askedTraitIds.includes(t.id));
+    
+    if (remainingTraits.length === 0) return null;
+
+    const probabilities = calculateProbabilities(characters, answers);
+    const bestTrait = findMaxInformationGain(remainingTraits, characters, probabilities, answers);
+    
+    if (bestTrait) {
+      return await formatQuestion(bestTrait);
+    }
+    
+    return null;
+  } catch (error) {
+    console.error("Error in getNextQuestion:", error);
+    throw error;
+  }
+}
+
+/**
+ * Get top N most likely characters
+ */
 export function getTopChoices(probabilities, characters, topN = 3) {
   return Object.entries(probabilities)
     .sort(([, probA], [, probB]) => probB - probA)
@@ -313,26 +401,37 @@ export function getTopChoices(probabilities, characters, topN = 3) {
     }));
 }
 
-// Check if we should stop asking questions and make a guess
-export async function shouldMakeGuess(sessionId, maxQuestions = 20, confidenceThreshold = 0.8) {
+/**
+ * stopping criteria with entropy and confidence checks
+ */
+export async function shouldMakeGuess(sessionId, maxQuestions = 20, confidenceThreshold = 0.65) {
   const answers = await prisma.answerLog.findMany({ 
     where: { sessionId } 
   });
   
-  // Stop if we've asked too many questions
-  if (answers.length >= maxQuestions) return true;
-  
-  // Stop if we have high confidence
   const characters = await prisma.character.findMany({
     include: { traits: { include: { trait: true } } }
   });
   
   const probabilities = calculateProbabilities(characters, answers);
   const maxProbability = Math.max(...Object.values(probabilities));
+  const entropy = calculateEntropy(probabilities);
   
-  return maxProbability >= confidenceThreshold;
+  // Always ask at least 5 questions unless extremely confident
+  if (answers.length < 5) {
+    return maxProbability >= 0.95;
+  }
+  
+  // Stop if we've asked too many questions
+  if (answers.length >= maxQuestions) return true;
+  
+  // Stop if high confidence OR very low entropy
+  return maxProbability >= confidenceThreshold || entropy < 0.4;
 }
 
+/**
+ * Get most likely character with enhanced metadata
+ */
 export async function getMostLikelyCharacter(sessionId) {
   try {
     const characters = await prisma.character.findMany({
@@ -349,7 +448,6 @@ export async function getMostLikelyCharacter(sessionId) {
 
     const probabilities = calculateProbabilities(characters, answers);
     
-    // Find character with highest probability
     let maxProb = 0;
     let bestCharacter = null;
     
@@ -363,57 +461,135 @@ export async function getMostLikelyCharacter(sessionId) {
     return {
       character: bestCharacter,
       confidence: maxProb,
-      topChoices: getTopChoices(probabilities, characters, 3)
+      topChoices: getTopChoices(probabilities, characters, 3),
+      entropy: calculateEntropy(probabilities)
     };
   } catch (error) {
     console.error("Error in getMostLikelyCharacter:", error);
     throw error;
   }
 }
+
+/**
+ * Update trait statistics based on actual information value
+ * Measures real entropy reduction instead of simple correctness
+ */
 export async function updateTraitStatistics(sessionId, correctCharacterId) {
   try {
     const answers = await prisma.answerLog.findMany({
       where: { sessionId },
-      include: { trait: true }
+      include: { trait: true },
+      orderBy: { createdAt: 'asc' }
     });
     
-    const correctCharacter = await prisma.character.findUnique({
-      where: { id: correctCharacterId },
+    const characters = await prisma.character.findMany({
       include: { traits: { include: { trait: true } } }
     });
     
-    // Update each trait that was asked in this session
-    for (const answer of answers) {
-      const characterTrait = correctCharacter.traits.find(t => 
-        t.traitId === answer.traitId
-      );
+    // Calculate how much each question reduced entropy
+    let currentProbs = {};
+    characters.forEach(c => {
+      currentProbs[c.id] = 1 / characters.length;
+    });
+    
+    const maxEntropy = Math.log2(characters.length);
+    
+    for (let i = 0; i < answers.length; i++) {
+      const answer = answers[i];
+      const entropyBefore = calculateEntropy(currentProbs);
       
-      const wasAnswerCorrect = characterTrait && 
-        ((answer.answer === 'TRUE' && characterTrait.value === 'TRUE') ||
-         (answer.answer === 'FALSE' && characterTrait.value === 'FALSE') ||
-         (answer.answer === 'PROBABLY' && characterTrait.value === 'TRUE') ||
-         (answer.answer === 'PROBABLY_NOT' && characterTrait.value === 'FALSE'));
+      // Simulate the answer's effect
+      const answersUpToNow = answers.slice(0, i + 1);
+      currentProbs = calculateProbabilities(characters, answersUpToNow);
+      const entropyAfter = calculateEntropy(currentProbs);
       
-      // Update trait popularity (how often this trait is useful)
-      const newPopularity = (answer.trait.popularity || 0) * 0.95 + 0.05;
+      const entropyReduction = entropyBefore - entropyAfter;
+      const normalizedReduction = maxEntropy > 0 ? entropyReduction / maxEntropy : 0;
       
-      // Update trait infoValue (how well this trait distinguishes characters)
-      let newInfoValue = answer.trait.infoValue || 0;
-      if (wasAnswerCorrect) {
-        newInfoValue = newInfoValue * 0.9 + 0.1; // Increase if useful
-      } else {
-        newInfoValue = newInfoValue * 0.95; // Decrease if not useful
-      }
+      // Update trait statistics
+      const trait = answer.trait;
+      
+      // Information value based on actual entropy reduction
+      const oldInfoValue = trait.infoValue || 0.5;
+      const newInfoValue = oldInfoValue * 0.9 + normalizedReduction * 0.1;
+      
+      // Popularity increases with each use
+      const oldPopularity = trait.popularity || 0.3;
+      const newPopularity = oldPopularity * 0.95 + 0.05;
       
       await prisma.trait.update({
         where: { id: answer.traitId },
         data: {
-          popularity: newPopularity,
-          infoValue: newInfoValue
+          popularity: Math.max(0.01, Math.min(1, newPopularity)),
+          infoValue: Math.max(0.01, Math.min(1, newInfoValue))
+        }
+      });
+    }
+    
+    // Bonus: reward traits that appeared early in successful games
+    for (let i = 0; i < Math.min(5, answers.length); i++) {
+      const answer = answers[i];
+      const earlyBonus = (5 - i) * 0.01; // Earlier questions get bigger bonus
+      
+      await prisma.trait.update({
+        where: { id: answer.traitId },
+        data: {
+          infoValue: {
+            increment: earlyBonus
+          }
         }
       });
     }
   } catch (error) {
     console.error("Error updating trait statistics:", error);
+  }
+}
+
+/**
+ * Get game quality metrics for performance monitoring
+ */
+export async function getGameMetrics(sessionId) {
+  try {
+    const answers = await prisma.answerLog.findMany({ 
+      where: { sessionId },
+      orderBy: { createdAt: 'asc' }
+    });
+    
+    const characters = await prisma.character.findMany({
+      include: { traits: { include: { trait: true } } }
+    });
+    
+    if (characters.length === 0) return null;
+    
+    // Calculate entropy reduction per question
+    const entropyReductions = [];
+    let currentProbs = {};
+    characters.forEach(c => {
+      currentProbs[c.id] = 1 / characters.length;
+    });
+    
+    for (let i = 0; i < answers.length; i++) {
+      const entropyBefore = calculateEntropy(currentProbs);
+      const answersUpToNow = answers.slice(0, i + 1);
+      currentProbs = calculateProbabilities(characters, answersUpToNow);
+      const entropyAfter = calculateEntropy(currentProbs);
+      
+      entropyReductions.push(entropyBefore - entropyAfter);
+    }
+    
+    const avgReduction = entropyReductions.length > 0 
+      ? entropyReductions.reduce((a, b) => a + b, 0) / entropyReductions.length 
+      : 0;
+    
+    return {
+      totalQuestions: answers.length,
+      averageEntropyReduction: avgReduction,
+      finalEntropy: calculateEntropy(currentProbs),
+      entropyReductions,
+      efficiency: avgReduction > 0 ? (Math.log2(characters.length) / answers.length) : 0
+    };
+  } catch (error) {
+    console.error("Error calculating game metrics:", error);
+    return null;
   }
 }

@@ -63,16 +63,20 @@ model Session {
 }
 
 model AnswerLog {
-  id         String   @id @default(uuid())
-  sessionId  String
-  traitId    String
-  questionId String?
-  answer     String
-  answeredAt DateTime @default(now())
-  session    Session  @relation(fields: [sessionId], references: [id])
-  trait      Trait    @relation(fields: [traitId], references: [id])
-  question   Question? @relation(fields: [questionId], references: [id])
+  id           String    @id @default(uuid())
+  sessionId    String
+  traitId      String
+  questionId   String?
+  answer       String
+  normalized   String?   // <- normalized (TRUE/FALSE/UNKNOWN/PROBABLY_YES)
+  isFallback   Boolean?  // <- if the question was a fallback question
+  answeredAt   DateTime  @default(now())
+
+  session      Session   @relation(fields: [sessionId], references: [id])
+  trait        Trait     @relation(fields: [traitId], references: [id])
+  question     Question? @relation(fields: [questionId], references: [id])
 }
+
 
 enum Typetrait {
   BOOLEAN
