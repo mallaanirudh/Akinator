@@ -2,6 +2,7 @@ import express from "express";
 import characterRoutes from "./routes/CharacterRoutes.js";
 import cors from "cors"
 import gameRoutes from "./routes/gameRoutes.js";
+import authRoutes from "./routes/authRoutes.js"
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -14,6 +15,7 @@ app.use(cors({
   credentials: true 
 }));
 // Routes
+app.use("/api/auth",authRoutes);
 app.use("/api/game", gameRoutes); 
 app.use("/api/characters", characterRoutes);
 app.listen(PORT, () => {

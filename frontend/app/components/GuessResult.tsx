@@ -8,6 +8,29 @@ interface GuessResultProps {
 }
 
 export default function GuessResult({ guess, onCorrect, onWrong }: GuessResultProps) {
+  // Safety checks
+  if (!guess?.character) {
+    return (
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <div className="text-center mb-6">
+          <div className="text-4xl mb-2">🤔</div>
+          <h2 className="text-2xl font-bold text-gray-800 mb-2">
+            Unable to make a guess
+          </h2>
+          <p className="text-gray-600">
+            Not enough information to identify the character.
+          </p>
+        </div>
+        <button
+          onClick={onWrong}
+          className="w-full bg-blue-500 hover:bg-blue-600 text-white py-3 px-6 rounded-lg font-semibold text-lg transition-colors"
+        >
+          Try Again
+        </button>
+      </div>
+    );
+  }
+
   const confidenceColor = guess.confidence > 0.7 
     ? 'text-green-600' 
     : guess.confidence > 0.4 
@@ -31,23 +54,24 @@ export default function GuessResult({ guess, onCorrect, onWrong }: GuessResultPr
       {/* Main Guess */}
       <div className="mb-6">
         <CharacterCard 
-          character={guess.character} 
+          character={guess.character}
           probability={guess.confidence}
-          isSelected={true}
         />
       </div>
 
       {/* Other Possibilities */}
-      {guess.topChoices.length > 1 && (
+      {guess.topChoices && guess.topChoices.length > 1 && (
         <div className="mb-6">
           <h3 className="font-semibold text-gray-700 mb-3">Other possibilities:</h3>
           <div className="grid gap-3">
             {guess.topChoices.slice(1).map((choice, index) => (
-              <CharacterCard 
-                key={choice.character.id}
-                character={choice.character}
-                probability={choice.probability}
-              />
+              choice.character && (
+                <CharacterCard 
+                  key={choice.character.id || index}
+                  character={choice.character}
+                  probability={choice.probability}
+                />
+              )
             ))}
           </div>
         </div>

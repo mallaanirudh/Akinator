@@ -1,6 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import {getNextQuestion, getMostLikelyCharacter, shouldMakeGuess, updateTraitStatistics,calculateProbabilities } from "../utils/akinatorlogic.js";
-
+import {getNextQuestion,  shouldMakeGuess ,updateTraitStatistics,getMostLikelyCharacter,calculateProbabilities} from "../utils/akinatorlogic.js";
 // Answer a question
 export const submitAnswer = async (req, res) => {
   try {
@@ -255,5 +254,78 @@ export const correctGuess = async (req, res) => {
   } catch (error) {
     console.error("Correction error:", error);
     res.status(500).json({ error: "Failed to process correction" });
+  }
+};
+// In your gameController.js
+export const getGameState = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    const session = await prisma.session.findUnique({
+      where: { id: sessionId },
+      include: {
+        answers: {
+          include: {
+            trait: true,
+            question: true
+          }
+        }
+      }
+    });
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    // Get current probabilities for top choices
+    const characters = await prisma.character.findMany({
+      include: { 
+        traits: { 
+          include: { trait: true } 
+        } 
+      }
+    });
+    
+    const answers = await prisma.answerLog.findMany({ 
+      where: { sessionId } 
+    });
+
+    const probabilities = calculateProbabilities(characters, answers);
+    const topChoices = Object.entries(probabilities)
+      .sort(([, probA], [, probB]) => probB - probA)
+      .slice(0, 3)
+      .map(([charId, prob]) => ({
+        character: characters.find(c => c.id === charId),
+        probability: prob
+      }));
+
+    // Get current question or guess
+    const shouldGuess = await shouldMakeGuess(sessionId);
+    
+    if (shouldGuess) {
+      const guess = await getMostLikelyCharacter(sessionId);
+      return res.json({
+        action: "guess",
+        guess,
+        topChoices,
+        answersCount: session.answers.length,
+        currentConfidence: guess?.confidence || topChoices[0]?.probability || 0,
+        message: "Ready to guess"
+      });
+    } else {
+      const question = await getNextQuestion(sessionId);
+      return res.json({
+        action: "question", 
+        question,
+        topChoices,
+        answersCount: session.answers.length,
+        currentConfidence: topChoices[0]?.probability || 0,
+        message: "Next question ready"
+      });
+    }
+
+  } catch (error) {
+    console.error("Get game state error:", error);
+    res.status(500).json({ error: "Failed to get game state" });
   }
 };

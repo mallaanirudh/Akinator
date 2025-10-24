@@ -40,12 +40,8 @@ export default function GameSession({ sessionId, userId }: GameSessionProps) {
   const loadGame = async () => {
     try {
       setGameState(prev => ({ ...prev, isLoading: true, error: undefined }));
-      const response = await api.getSession(sessionId);
-      // If no current question, get next one
-      if (!gameState.currentQuestion && !gameState.guess) {
-        const gameResponse = await api.startGame(userId);
-        handleGameResponse(gameResponse);
-      }
+      const response = await api.getGameState(sessionId);
+      handleGameResponse(response);
     } catch (error) {
       setGameState(prev => ({ 
         ...prev, 
@@ -90,7 +86,6 @@ export default function GameSession({ sessionId, userId }: GameSessionProps) {
     try {
       await api.correctGuess(sessionId, characterId);
       alert('Thanks for the correction! The AI will learn from this.');
-      // Start new game or redirect
       window.location.href = '/';
     } catch (error) {
       alert('Failed to submit correction');
@@ -98,7 +93,6 @@ export default function GameSession({ sessionId, userId }: GameSessionProps) {
   };
 
   const handleWrongGuess = () => {
-    // Continue with more questions or handle differently
     alert("I'll try to guess better next time!");
     window.location.href = '/';
   };
@@ -120,47 +114,61 @@ export default function GameSession({ sessionId, userId }: GameSessionProps) {
   }
 
   return (
-    <div className="max-w-2xl mx-auto">
-      {/* Progress Bar */}
-      <div className="mb-6">
-        <div className="flex justify-between text-sm text-gray-600 mb-1">
-          <span>Questions: {gameState.answersCount}</span>
-          <span>Confidence: {(gameState.currentConfidence * 100).toFixed(1)}%</span>
+    <div className="max-w-6xl mx-auto p-4 space-y-6">
+      
+      {/* Progress Section - Top */}
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <div className="flex justify-between items-center mb-4">
+          <div>
+            <h2 className="text-xl font-bold text-gray-800">Character Guesser</h2>
+            <p className="text-gray-600">Questions: {gameState.answersCount}</p>
+          </div>
+          <div className="text-right">
+            <div className="text-2xl font-bold text-green-600">
+              {(gameState.currentConfidence * 100).toFixed(1)}%
+            </div>
+            <div className="text-sm text-gray-500">Confidence</div>
+          </div>
         </div>
-        <div className="w-full bg-gray-200 rounded-full h-2">
+        
+        <div className="w-full bg-gray-200 rounded-full h-3">
           <div 
-            className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+            className="bg-gradient-to-r from-blue-500 to-purple-600 h-3 rounded-full transition-all duration-500"
             style={{ width: `${Math.min(gameState.answersCount * 10, 100)}%` }}
           ></div>
         </div>
       </div>
 
-      {/* Current Question or Guess */}
-      {gameState.guess ? (
-        <GuessResultCard 
-          guess={gameState.guess}
-          onCorrect={handleCorrectGuess}
-          onWrong={handleWrongGuess}
-        />
-      ) : gameState.currentQuestion ? (
-        <>
-          <QuestionCard 
-            question={gameState.currentQuestion}
-            questionNumber={gameState.answersCount + 1}
+      {/* Main Game Content */}
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        {gameState.guess ? (
+          <GuessResultCard 
+            guess={gameState.guess}
+            onCorrect={handleCorrectGuess}
+            onWrong={handleWrongGuess}
           />
-          <AnswerButtons onAnswer={handleAnswer} />
-        </>
-      ) : (
-        <div className="text-center text-gray-500">
-          No questions available
-        </div>
-      )}
+        ) : gameState.currentQuestion ? (
+          <div className="space-y-6">
+            <QuestionCard 
+              question={gameState.currentQuestion}
+              questionNumber={gameState.answersCount + 1}
+            />
+            <AnswerButtons onAnswer={handleAnswer} />
+          </div>
+        ) : (
+          <div className="text-center py-8">
+            <div className="text-4xl mb-4">🤔</div>
+            <h3 className="text-xl font-semibold text-gray-800 mb-2">No questions available</h3>
+            <p className="text-gray-600">Please try starting a new game.</p>
+          </div>
+        )}
+      </div>
 
-      {/* Top Choices Sidebar */}
+      {/* All Character Cards - Bottom */}
       {gameState.topChoices.length > 0 && (
-        <div className="mt-8">
-          <h3 className="font-semibold text-gray-700 mb-3">Current Top Guesses:</h3>
-          <div className="grid gap-3">
+        <div className="bg-white rounded-lg shadow-lg p-6">
+          <h3 className="font-bold text-black text-lg mb-4">Possible Characters</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {gameState.topChoices.map((choice, index) => (
               <CharacterCard 
                 key={choice.character.id}

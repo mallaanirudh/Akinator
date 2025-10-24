@@ -5,6 +5,7 @@ import {
   getSession, 
   endGame,
   correctGuess,
+  getGameState,
 } from "../controllers/gameController.js";
 
 const router = express.Router();
@@ -21,5 +22,6 @@ router.get("/session/:sessionId", getSession);
 
 // POST /api/game/end - End game session
 router.post("/end", endGame);
+router.get("/state/:sessionId", getGameState);
 
 export default router;

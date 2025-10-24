@@ -1,7 +1,7 @@
 import { Character } from '@/types';
 
 interface CharacterCardProps {
-  character: Character;
+  character?: Character | null;
   probability?: number;
   isSelected?: boolean;
   onClick?: () => void;
@@ -13,6 +13,23 @@ export default function CharacterCard({
   isSelected = false,
   onClick 
 }: CharacterCardProps) {
+  // Safety check - if character is undefined or null, show fallback
+  if (!character) {
+    return (
+      <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+        <div className="text-gray-500 text-center">Character data unavailable</div>
+      </div>
+    );
+  }
+
+  // Safe destructuring with fallbacks
+  const safeCharacter = {
+    name: character.name || 'Unknown Character',
+    universe: character.universe,
+    aliases: character.aliases || [],
+    traits: character.traits || []
+  };
+
   return (
     <div 
       className={`border rounded-lg p-4 cursor-pointer transition-all ${
@@ -24,13 +41,13 @@ export default function CharacterCard({
     >
       <div className="flex justify-between items-start">
         <div>
-          <h3 className="font-bold text-lg">{character.name}</h3>
-          {character.universe && (
-            <p className="text-sm text-gray-600">{character.universe}</p>
+          <h3 className="font-bold text-black">{safeCharacter.name}</h3>
+          {safeCharacter.universe && (
+            <p className="text-sm text-black">{safeCharacter.universe}</p>
           )}
-          {character.aliases.length > 0 && (
+          {safeCharacter.aliases.length > 0 && (
             <p className="text-xs text-gray-500 mt-1">
-              AKA: {character.aliases.join(', ')}
+              AKA: {safeCharacter.aliases.join(', ')}
             </p>
           )}
         </div>
@@ -39,26 +56,26 @@ export default function CharacterCard({
             <div className="text-2xl font-bold text-green-600">
               {(probability * 100).toFixed(1)}%
             </div>
-            <div className="text-xs text-gray-500">confidence</div>
+            <div className="text-xs text-black">confidence</div>
           </div>
         )}
       </div>
       
-      {character.traits.length > 0 && (
+      {safeCharacter.traits.length > 0 && (
         <div className="mt-3">
-          <div className="text-xs font-semibold text-gray-500 mb-1">Traits:</div>
+          <div className="text-xs font-bold text-black mb-1">Traits:</div>
           <div className="flex flex-wrap gap-1">
-            {character.traits.slice(0, 4).map((trait) => (
+            {safeCharacter.traits.slice(0, 4).map((trait) => (
               <span 
                 key={trait.id}
-                className="px-2 py-1 bg-gray-100 text-xs rounded-full"
+                className="px-2 py-1 bg-gray-100 text-black rounded-full"
               >
-                {trait.trait.displayName}: {trait.value}
+                {trait.trait?.displayName || 'Trait'}: {trait.value}
               </span>
             ))}
-            {character.traits.length > 4 && (
-              <span className="px-2 py-1 bg-gray-100 text-xs rounded-full">
-                +{character.traits.length - 4} more
+            {safeCharacter.traits.length > 4 && (
+              <span className="px-2 py-1 bg-gray-100 text-black text-xs rounded-full">
+                +{safeCharacter.traits.length - 4} more
               </span>
             )}
           </div>
