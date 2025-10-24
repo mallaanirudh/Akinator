@@ -5,7 +5,7 @@ A web-based Akinator-style game using JavaScript and TypeScript, with a Node.js 
 
 ## Demo
 
-Add a demo link or GIF here if available.
+(https://github.com/user-attachments/assets/4d9c4827-2b6e-48e0-8312-ca6e877b8f28)
 
 ## Features
 
@@ -68,8 +68,5 @@ Akinator/
 └─ README.md
 ```
 
-##DEMO VIDEO
-
-https://github.com/user-attachments/assets/4d9c4827-2b6e-48e0-8312-ca6e877b8f28
 
 
