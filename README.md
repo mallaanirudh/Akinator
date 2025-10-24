@@ -68,5 +68,5 @@ Akinator/
 └─ README.md
 ```
 
-
+Note: The Engine in the backend is the modularized version of the akinator logic, could not be finished due to time constraint.
 
